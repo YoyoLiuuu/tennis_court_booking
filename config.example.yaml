@@ -1,0 +1,23 @@
+# Copy to config.yaml and edit.
+booking_url: https://recreation.utoronto.ca/booking/c394b167-188b-4846-994c-61e752697cc4
+
+# Which slots you want. A slot is booked if it falls inside ANY window.
+# days: Mon Tue Wed Thu Fri Sat Sun (omit for every day)
+# start/end: 24h clock; the whole slot must fit inside the window.
+windows:
+  - days: [Mon, Tue, Wed, Thu, Fri]
+    start: "17:00"
+    end: "22:00"
+  - days: [Sat, Sun]
+    start: "09:00"
+    end: "18:00"
+
+# Optional: only these court names (substring match on the court tab). Omit for any court.
+# courts: ["Court 1", "Court 2"]
+
+max_bookings: 1          # stop after booking this many slots
+poll_seconds: 60         # how often to re-check (please keep it >= 30)
+headless: true           # set false to watch the browser work
+
+# Optional phone push notification via https://ntfy.sh (install the app, subscribe to a secret topic)
+# ntfy_topic: my-secret-tennis-topic-123

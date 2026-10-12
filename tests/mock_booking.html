@@ -1,0 +1,23 @@
+<!doctype html><html><body>
+<a href="#">Log Out</a>
+<div id="tabBookingFacilities"><button data-facility-id="1" onclick="setCourt(1)">Court 1</button><button data-facility-id="2" onclick="setCourt(2)">Court 2</button></div>
+<div id="divBookingDateSelector">
+  <button class="single-date-select-button" onclick="setDay('Mon')">Mon Oct 12</button>
+  <button class="single-date-select-button" onclick="setDay('Sat')">Sat Oct 17</button>
+</div>
+<div id="divBookingSlots"></div>
+<div id="msg"></div>
+<script>
+let court=1, day='Mon';
+const booked=new Set();
+function setCourt(c){court=c;render()} function setDay(d){day=d;render()}
+function render(){
+  const slots=[['7 - 8 PM',court===2],['11 AM - 12 PM',true],['8:30 PM - 9:30 PM',false]];
+  document.getElementById('divBookingSlots').innerHTML=slots.map(([t,open],i)=>{
+    const k=court+day+i, isB=booked.has(k);
+    return `<div class="booking-slot-item"><p><strong>${t}</strong></p>`+
+      (isB?'<span>Booked</span>':open?`<button class="btn btn-primary" onclick="book('${k}')">Book Now</button>`:'<span>UNAVAILABLE</span>')+'</div>'}).join('');
+}
+function book(k){booked.add(k);document.getElementById('msg').textContent='Booking successful';render()}
+render();
+</script></body></html>
