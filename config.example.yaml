@@ -15,7 +15,8 @@ windows:
 # Optional: only these court names (substring match on the court tab). Omit for any court.
 # courts: ["Court 1", "Court 2"]
 
-max_bookings: 1          # stop after booking this many slots
+max_per_day: 1           # book at most this many slots on any one date (0 = no limit)
+max_bookings: 0          # stop after this many bookings in total (0 = run forever)
 poll_seconds: 60         # how often to re-check (please keep it >= 30)
 headless: true           # set false to watch the browser work
 

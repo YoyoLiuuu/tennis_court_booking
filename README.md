@@ -20,14 +20,35 @@ If it expires, the bot stops and tells you to run `login` again.
 
 ```bash
 python court_bot.py watch --dry-run --once   # first: just show what's open and matches, book nothing
-python court_bot.py watch                    # poll every poll_seconds and book a match
+python court_bot.py watch                    # run in this terminal (Ctrl+C to stop)
 ```
 
 Set `headless: false` in `config.yaml` to watch it click. Screenshots of each booking attempt and
-any errors go to `screenshots/`. Add an `ntfy_topic` to get a phone push when it books.
+any errors go to `screenshots/`.
 
-Keep it running on a computer that stays awake (or a small always-on machine) for it to catch
-cancellations.
+## Run it as an always-on service
+
+Once the dry run looks right:
+
+```bash
+python service.py install    # starts now and again every time you log in; restarts if it crashes
+python service.py logs       # follow what it's doing
+python service.py stop | start | status | uninstall
+```
+
+It keeps checking every `poll_seconds` and books every slot that matches your `windows`, at most
+`max_per_day` slots on any one date (default 1), forever (`max_bookings: 0`). What it has booked is
+recorded in `bookings.json`, so a restart won't double-book a day.
+
+- **Get notified:** set `ntfy_topic` in `config.yaml` and subscribe to that topic in the
+  [ntfy](https://ntfy.sh) phone app. You get a push for every booking, and if your UofT login expires.
+- **When the login expires**, the bot keeps running and retries every 15 min. To fix it:
+  `python service.py stop`, then `python court_bot.py login`, then `python service.py start`.
+  (Stop first; the running bot holds the browser profile.)
+- **Keep the computer on.** On a Mac the service uses `caffeinate` to prevent idle sleep, but closing
+  the lid still sleeps it. On Windows, turn off sleep in power settings. A spare always-on machine
+  (old laptop, Raspberry Pi) works well.
+- Using a venv? Run `service.py install` with the venv's python so the service uses it too.
 
 ## How it works
 

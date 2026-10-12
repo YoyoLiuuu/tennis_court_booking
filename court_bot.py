@@ -25,6 +25,8 @@ import yaml
 HERE = Path(__file__).resolve().parent
 PROFILE_DIR = HERE / ".profile"
 SHOT_DIR = HERE / "screenshots"
+BOOKINGS_FILE = HERE / "bookings.json"
+LOGIN_RETRY_SECONDS = 15 * 60
 
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
@@ -224,14 +226,35 @@ def try_book(page, slot, label: str, dry_run: bool) -> bool:
     return ok
 
 
-def scan_once(page, cfg: dict, windows: list[Window], dry_run: bool, booked: list[str]) -> None:
+class NotLoggedIn(Exception):
+    pass
+
+
+def load_bookings() -> dict[str, list[str]]:
+    try:
+        return json.loads(BOOKINGS_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_bookings(booked: dict[str, list[str]]) -> None:
+    BOOKINGS_FILE.write_text(json.dumps(booked, indent=2))
+
+
+def total_bookings(booked: dict[str, list[str]]) -> int:
+    return sum(len(v) for v in booked.values())
+
+
+def scan_once(page, cfg: dict, windows: list[Window], dry_run: bool, booked: dict[str, list[str]]) -> None:
+    """One pass over every court and date. `booked` maps a date label to slots booked on it (mutated)."""
     page.goto(cfg["booking_url"], wait_until="domcontentloaded")
     wait_for_slots(page)
 
     if looks_logged_out(page):
         screenshot(page, "logged-out")
-        raise SystemExit("Looks like you are not signed in. Run:  python court_bot.py login")
+        raise NotLoggedIn()
 
+    per_day = int(cfg.get("max_per_day", 1))
     courts_filter = [c.lower() for c in cfg.get("courts") or []]
     facilities = first_present(page, FACILITY_BUTTON_SELECTORS)
     facility_count = facilities.count() if facilities is not None else 1
@@ -259,6 +282,9 @@ def scan_once(page, cfg: dict, windows: list[Window], dry_run: bool, booked: lis
                 dbtn.click()
                 wait_for_slots(page)
             weekday = find_weekday(day_text)
+            day_key = day_text or weekday or "?"
+            if per_day and len(booked.get(day_key, [])) >= per_day:
+                continue
 
             slots = first_present(page, SLOT_SELECTORS)
             if slots is None:
@@ -272,9 +298,10 @@ def scan_once(page, cfg: dict, windows: list[Window], dry_run: bool, booked: lis
                 if not visible_buttons_matching(slot, BOOK_BUTTON_RE):
                     continue
                 found_any = True
-                label = f"{court} | {day_text or weekday or '?'} | {hhmm(rng[0])}-{hhmm(rng[1])}"
+                label = f"{court} | {day_key} | {hhmm(rng[0])}-{hhmm(rng[1])}"
                 if try_book(page, slot, label, dry_run):
-                    booked.append(label)
+                    booked.setdefault(day_key, []).append(label)
+                    save_bookings(booked)
                     notify(cfg, f"Booked tennis: {label}")
                     # page state changed; rescan from the top on the next round
                     return
@@ -313,24 +340,37 @@ def cmd_watch(cfg: dict, dry_run: bool, once: bool) -> None:
 
     windows = [Window.from_cfg(w) for w in cfg.get("windows") or []]
     poll = max(int(cfg.get("poll_seconds", 60)), 15)
-    booked: list[str] = []
+    max_total = int(cfg.get("max_bookings", 0))  # 0 = keep going forever
+    booked = load_bookings()
+    login_warned = False
+    log(f"Watching {cfg['booking_url']} every {poll}s ({total_bookings(booked)} bookings so far)")
     with sync_playwright() as pw:
         ctx = launch(pw, headless=cfg.get("headless", True))
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         while True:
+            wait = poll
             try:
                 scan_once(page, cfg, windows, dry_run, booked)
-            except SystemExit:
-                raise
+                login_warned = False
+            except NotLoggedIn:
+                msg = "Tennis bot is signed out. Run:  python court_bot.py login"
+                if once:
+                    raise SystemExit(msg)
+                # stay alive (a service would just crash-loop) and retry after the user logs in again
+                log(f"{msg}  (retrying every {LOGIN_RETRY_SECONDS // 60} min)")
+                if not login_warned:
+                    notify(cfg, msg)
+                    login_warned = True
+                wait = LOGIN_RETRY_SECONDS
             except Exception as e:
                 log(f"scan error: {e}")
                 screenshot(page, "error")
-            if len(booked) >= cfg.get("max_bookings", 1):
-                log(f"Done. Booked: {json.dumps(booked)}")
+            if max_total and total_bookings(booked) >= max_total:
+                log(f"Reached max_bookings={max_total}. Booked: {json.dumps(booked)}")
                 break
             if once:
                 break
-            time.sleep(poll)
+            time.sleep(wait)
         ctx.close()
 
 

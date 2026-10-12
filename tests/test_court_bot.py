@@ -37,14 +37,21 @@ def test_windows():
 def test_books_against_mock_page(tmp_path, monkeypatch):
     sync_api = pytest.importorskip("playwright.sync_api")
     monkeypatch.setattr(cb, "SHOT_DIR", tmp_path)
+    monkeypatch.setattr(cb, "BOOKINGS_FILE", tmp_path / "bookings.json")
     url = (Path(__file__).parent / "mock_booking.html").resolve().as_uri()
-    cfg = {"booking_url": url, "courts": ["Court 2"], "max_bookings": 1}
-    windows = [cb.Window.from_cfg({"days": ["Mon"], "start": "18:00", "end": "21:00"})]
+    cfg = {"booking_url": url, "courts": ["Court 2"], "max_per_day": 1}
+    windows = [cb.Window.from_cfg({"start": "18:00", "end": "21:00"})]
     with sync_api.sync_playwright() as pw:
         exe = os.environ.get("CHROMIUM_PATH")
         browser = pw.chromium.launch(executable_path=exe) if exe else pw.chromium.launch()
         page = browser.new_page()
-        booked = []
-        cb.scan_once(page, cfg, windows, dry_run=False, booked=booked)
+        booked = cb.load_bookings()
+        for _ in range(3):  # third pass must not book anything: both dates hit max_per_day
+            cb.scan_once(page, cfg, windows, dry_run=False, booked=booked)
         browser.close()
-    assert booked == ["Court 2 | Mon Oct 12 | 19:00-20:00"]
+    expected = {
+        "Mon Oct 12": ["Court 2 | Mon Oct 12 | 19:00-20:00"],
+        "Sat Oct 17": ["Court 2 | Sat Oct 17 | 19:00-20:00"],
+    }
+    assert booked == expected
+    assert cb.load_bookings() == expected  # persisted, so a restarted service remembers
