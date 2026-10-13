@@ -24,6 +24,9 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 PROFILE_DIR = HERE / ".profile"
+# Chromium drops session cookies (which is what the site's login uses) when it closes, so the login
+# is also saved here explicitly and put back every time the browser starts.
+SESSION_FILE = PROFILE_DIR / "session.json"
 SHOT_DIR = HERE / "screenshots"
 BOOKINGS_FILE = HERE / "bookings.json"
 LOGIN_RETRY_SECONDS = 15 * 60
@@ -32,6 +35,7 @@ DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 # Fusion markup varies a bit between schools/versions, so every lookup tries a few selectors.
 DATE_BUTTON_SELECTORS = [
+    "button.single-date-select-one-click",  # the visible date strip (the -two-click set lives in a hidden popup)
     "button.single-date-select-button",
     "#divBookingDateSelector button",
     "button[data-date-text]",
@@ -48,6 +52,7 @@ SLOT_SELECTORS = [
 ]
 BOOK_BUTTON_RE = re.compile(r"^\s*(book( now)?|reserve)\s*$", re.I)
 CONFIRM_BUTTON_RE = re.compile(r"^\s*(confirm|yes|book|book now|reserve|ok|submit)\s*$", re.I)
+UNBOOKABLE_RE = re.compile(r"unavailable|full|waitlist|closed", re.I)
 LOGIN_HINT_RE = re.compile(r"(sign in|log ?in)", re.I)
 
 
@@ -164,8 +169,9 @@ def screenshot(page, name: str) -> None:
 
 
 def first_present(page, selectors: list[str]):
+    """First selector with visible matches (Fusion keeps hidden copies of some controls in popups)."""
     for sel in selectors:
-        loc = page.locator(sel)
+        loc = page.locator(sel).filter(visible=True)
         if loc.count():
             return loc
     return None
@@ -175,11 +181,22 @@ def visible_buttons_matching(scope, pattern: re.Pattern):
     out = []
     for btn in scope.locator("button, a.btn, input[type=submit]").all():
         try:
+            if "disabled" in (btn.get_attribute("class") or "").split():  # styled as disabled, no attribute
+                continue
             if btn.is_visible() and btn.is_enabled() and pattern.match(btn.inner_text() or btn.get_attribute("value") or ""):
                 out.append(btn)
         except Exception:
             continue
     return out
+
+
+def book_buttons(slot):
+    """Buttons that would book this slot: 'Book Now'-style text, else any live button in its action area."""
+    found = visible_buttons_matching(slot, BOOK_BUTTON_RE)
+    if found:
+        return found
+    action = slot.locator(".booking-slot-action-item")
+    return [b for b in visible_buttons_matching(action, re.compile(r".*", re.S)) if not UNBOOKABLE_RE.search(b.inner_text() or "")]
 
 
 def wait_for_slots(page) -> None:
@@ -197,7 +214,7 @@ def looks_logged_out(page) -> bool:
 
 
 def try_book(page, slot, label: str, dry_run: bool) -> bool:
-    buttons = visible_buttons_matching(slot, BOOK_BUTTON_RE)
+    buttons = book_buttons(slot)
     if not buttons:
         return False
     if dry_run:
@@ -273,29 +290,34 @@ def scan_once(page, cfg: dict, windows: list[Window], dry_run: bool, booked: dic
         dates = first_present(page, DATE_BUTTON_SELECTORS)
         date_count = dates.count() if dates is not None else 1
         for di in range(date_count):
-            day_text = ""
+            day_text = day_key = ""
             if dates is not None:
                 dbtn = dates.nth(di)
                 day_text = " ".join((dbtn.inner_text() or "").split())
+                day_key = (dbtn.get_attribute("data-date-text") or "").strip()  # e.g. "Oct 13, 2026"
                 if dbtn.is_disabled():
                     continue
                 dbtn.click()
                 wait_for_slots(page)
             weekday = find_weekday(day_text)
-            day_key = day_text or weekday or "?"
+            day_key = day_key or day_text or weekday or "?"
             if per_day and len(booked.get(day_key, [])) >= per_day:
                 continue
 
             slots = first_present(page, SLOT_SELECTORS)
             if slots is None:
                 continue
+            seen: list[str] = []
+            open_count = 0
             for si in range(slots.count()):
                 slot = slots.nth(si)
                 text = " ".join((slot.inner_text() or "").split())
                 rng = find_time_range(text)
-                if not slot_wanted(windows, weekday, rng):
-                    continue
-                if not visible_buttons_matching(slot, BOOK_BUTTON_RE):
+                if rng:
+                    seen.append(f"{hhmm(rng[0])}-{hhmm(rng[1])}")
+                bookable = bool(book_buttons(slot))
+                open_count += bookable
+                if not bookable or not slot_wanted(windows, weekday, rng):
                     continue
                 found_any = True
                 label = f"{court} | {day_key} | {hhmm(rng[0])}-{hhmm(rng[1])}"
@@ -307,6 +329,8 @@ def scan_once(page, cfg: dict, windows: list[Window], dry_run: bool, booked: dic
                     return
                 elif dry_run:
                     notify(cfg, f"Open tennis slot: {label}")
+            if dry_run:
+                log(f"{court} | {weekday or '?'} {day_key}: {len(seen)} slots [{', '.join(seen) or 'none'}], {open_count} open")
     if not found_any:
         log("No matching open slots.")
 
@@ -320,7 +344,22 @@ def load_cfg(path: str) -> dict:
 
 def launch(pw, headless: bool):
     PROFILE_DIR.mkdir(exist_ok=True)
-    return pw.chromium.launch_persistent_context(str(PROFILE_DIR), headless=headless, viewport={"width": 1280, "height": 1000})
+    ctx = pw.chromium.launch_persistent_context(str(PROFILE_DIR), headless=headless, viewport={"width": 1280, "height": 1000})
+    restore_session(ctx)
+    return ctx
+
+
+def save_session(ctx) -> None:
+    """Save every cookie (session cookies included) so the login survives a browser restart."""
+    ctx.storage_state(path=str(SESSION_FILE))
+
+
+def restore_session(ctx) -> None:
+    if not SESSION_FILE.exists():
+        return
+    cookies = json.loads(SESSION_FILE.read_text()).get("cookies") or []
+    if cookies:
+        ctx.add_cookies(cookies)
 
 
 def cmd_login(cfg: dict) -> None:
@@ -331,8 +370,18 @@ def cmd_login(cfg: dict) -> None:
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.goto(cfg["booking_url"])
         input("Sign in with your UTORid (and Duo) in the browser window, open the booking page, then press Enter here... ")
+        try:
+            page.goto(cfg["booking_url"])
+            still_out = looks_logged_out(page)
+        except Exception as e:  # e.g. the browser window was closed by hand
+            log(f"Could not re-check the booking page ({e}); saving the session anyway.")
+            still_out = False
+        save_session(ctx)
         ctx.close()
-    log("Session saved to .profile/ — you can now run:  python court_bot.py watch")
+    if still_out:
+        log("Warning: the booking page still showed a sign-in prompt. Finish signing in and run login again.")
+    else:
+        log("Session saved to .profile/ — you can now run:  python court_bot.py watch")
 
 
 def cmd_watch(cfg: dict, dry_run: bool, once: bool) -> None:
@@ -352,6 +401,7 @@ def cmd_watch(cfg: dict, dry_run: bool, once: bool) -> None:
             try:
                 scan_once(page, cfg, windows, dry_run, booked)
                 login_warned = False
+                save_session(ctx)  # keep any refreshed login cookies
             except NotLoggedIn:
                 msg = "Tennis bot is signed out. Run:  python court_bot.py login"
                 if once:

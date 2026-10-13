@@ -58,10 +58,10 @@ confirmation dialog appears it confirms it, then checks the page for a success m
 
 ## Caveats
 
-- The page layout was written against the standard Innosoft Fusion booking layout that
-  recreation.utoronto.ca uses, but couldn't be tested against the live site. If it never finds slots,
-  run with `headless: false` and check the `screenshots/` folder; the CSS selectors are at the top
-  of `court_bot.py`.
+- The selectors were checked against the live recreation.utoronto.ca page in October 2026, but the
+  booking flow after clicking **Book Now** has only been exercised against the mock page. If it never
+  finds slots, or a booking attempt doesn't confirm, run with `headless: false` and check the
+  `screenshots/` folder; the CSS selectors are at the top of `court_bot.py`.
 - If the site adds a CAPTCHA to booking, the bot can't get past it.
 - Please be polite: keep `poll_seconds` at 30 or more, and check the Recreation booking rules
   about automated bookings.

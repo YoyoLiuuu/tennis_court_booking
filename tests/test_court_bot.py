@@ -55,3 +55,22 @@ def test_books_against_mock_page(tmp_path, monkeypatch):
     }
     assert booked == expected
     assert cb.load_bookings() == expected  # persisted, so a restarted service remembers
+
+
+def test_session_cookies_survive_browser_restart(tmp_path, monkeypatch):
+    sync_api = pytest.importorskip("playwright.sync_api")
+    monkeypatch.setattr(cb, "SESSION_FILE", tmp_path / "session.json")
+    session_cookie = {"name": "auth", "value": "x", "domain": "example.com", "path": "/", "expires": -1}
+    with sync_api.sync_playwright() as pw:
+        exe = os.environ.get("CHROMIUM_PATH")
+        browser = pw.chromium.launch(executable_path=exe) if exe else pw.chromium.launch()
+        ctx = browser.new_context()
+        ctx.add_cookies([session_cookie])
+        cb.save_session(ctx)
+        ctx.close()
+        ctx = browser.new_context()
+        assert ctx.cookies() == []
+        cb.restore_session(ctx)
+        names = [(c["name"], c["value"]) for c in ctx.cookies()]
+        browser.close()
+    assert names == [("auth", "x")]
